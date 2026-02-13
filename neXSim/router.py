@@ -1,0 +1,335 @@
+import os
+import time
+
+from flask import request
+from flask_restx import Resource, Api
+from pydantic import ValidationError
+from neXSim import app
+from neXSim.characterization import characterize, kernel_explanation
+from neXSim.models import *
+from neXSim.search import *
+from neXSim.summary import full_summary
+from neXSim.lca import lca
+from neXSim.report import report_all
+from neXSim.utils import is_valid_babelnet_id
+
+api = Api(app, doc='/api/docs', title='neXSim API', version='0.1', description='neXSim API')
+
+
+def validate_and_parse_entity_list(json):
+    try:
+        _input = EntityList.model_validate(json)
+    except ValidationError as e:
+        return {"error": e.errors()}, 400
+
+    return _input
+
+
+def validate_and_parse_nexsim_response(json):
+    try:
+        _input = NeXSimResponse.model_validate(json)
+    except ValidationError as e:
+        return {"error": e.errors()}, 400
+
+    return _input
+
+
+def check_summary(req: NeXSimResponse):
+    if req.summaries is None:
+        return False
+    summarized_entities = [x.entity for x in req.summaries]
+    for entity in req.unit:
+        if entity not in summarized_entities:
+            return False
+
+    return True
+
+
+def check_lca(req: NeXSimResponse):
+    return req.lca is not None
+
+
+@api.route('/index/')
+@api.doc()
+class Index(Resource):
+
+    @api.response(200, 'Success')
+    def get(self):
+        return "Welcome to neXSim"
+
+
+@api.route('/api/search/<string:lemma>/<int:page>')
+@api.doc(params={'lemma': 'a word or phrase to search for'
+    , 'page': 'the page number (starting from 0)'})
+class SearchByLemma(Resource):
+
+    @api.response(200, 'Success')
+    def get(self, lemma, page):
+
+        # validation: page should be a non-negative integer
+        if page < 0:
+
+            return app.response_class(
+                response="Invalid page number. It should be a non-negative integer.",
+                status=400,
+                mimetype='text/plain'
+            )
+
+        entities = search_by_lemma(lemma, page, 10 * page)
+
+        resp: EntityList = EntityList(entities=list(entities))
+
+        return app.response_class(
+            response=(resp.model_dump_json()),
+            status=200,
+            mimetype='application/json'
+        )
+
+
+def search_by_ids(entities):
+    print(entities[0])
+    for entity in entities:
+        if not is_valid_babelnet_id(entity):
+            return app.response_class(
+                response=f"{entity} is not a valid babelnet id",
+                status=400,
+                mimetype='text/plain'
+            )
+
+    resp: EntityList = EntityList(entities=list(search_by_id(entities, True)))
+
+    return app.response_class(
+        response=(resp.model_dump_json()),
+        status=200,
+        mimetype='application/json'
+    )
+
+@api.route('/api/entities/')
+class SearchById(Resource):
+    @api.response(200, 'Success')
+    def post(self):
+
+        data = request.json
+
+        if data is None:
+            return app.response_class(
+                response=f"No data provided.",
+                status=400,
+                mimetype='text/plain'
+            )
+
+        if "entities" not in data:
+            return app.response_class(
+                response=f"No entities provided.",
+                status=400,
+                mimetype='text/plain'
+            )
+
+        entities:list[str] = data["entities"]
+
+        for entity in entities:
+            if not is_valid_babelnet_id(entity):
+                return app.response_class(
+                    response=f"{entity} is not a valid babelnet id",
+                    status=400,
+                    mimetype='text/plain'
+                )
+
+        return search_by_ids(entities)
+
+
+# Receives a list of valid Babelnet ids as a parameter
+# Outputs a list of "Entity"
+@api.route('/api/entities/<string:ids>')
+@api.doc(params={'ids': 'a list of valid babelnet ids separated by comma'})
+class Search(Resource):
+
+    @api.response(200, 'Success')
+    def get(self, ids):
+
+
+        entities = ids.split(',')
+        return search_by_ids(entities)
+
+
+# Receives in the body a list of Entity ID (which are Babelnet IDs) [field "unit"]
+# Produces a dict, called "summaries", in which, for each "entity",
+# we have a list of Relation [field "Summary"]
+# and a list of entity IDs [field "tops"]
+
+@api.route('/api/summary')
+class Summary(Resource):
+
+    @api.param("humanReadable", "Return results in human-readable format (true/false)",
+               type=bool, required=False, default=False)
+    @api.response(200, 'Success')
+    def post(self):
+
+        parsed_request = validate_and_parse_nexsim_response(request.json)
+
+        if type(parsed_request) != NeXSimResponse:
+            return parsed_request
+
+        my_request: NeXSimResponse = parsed_request
+
+        if my_request.summaries is None:
+            my_request.summaries = []
+
+        full_summary(my_request)
+
+        return app.response_class(
+            response=my_request.model_dump_json(),
+            status=200,
+            mimetype='application/json',
+        )
+
+
+@api.route('/api/lca')
+class LCA(Resource):
+
+    @api.response(200, 'Success')
+    def post(self):
+        parsed_request = validate_and_parse_nexsim_response(request.json)
+
+        if type(parsed_request) != NeXSimResponse:
+            return parsed_request
+
+        my_request: NeXSimResponse = parsed_request
+
+        upper: bool = os.environ.get('PREDICATES_UPPER') == 'True'
+        lca(my_request, upper)
+
+        return app.response_class(
+            response=my_request.model_dump_json(),
+            status=200,
+            mimetype='application/json',
+        )
+
+
+@api.route('/api/characterize')
+class Characterization(Resource):
+
+    @api.response(200, 'Success')
+    def post(self):
+        parsed_request = validate_and_parse_nexsim_response(request.json)
+
+        if type(parsed_request) != NeXSimResponse:
+            return parsed_request
+
+        my_request: NeXSimResponse = parsed_request
+
+        if not check_summary(my_request):
+            return app.response_class(
+                response=f"Unit has no summary. Cannot proceed to the characterization",
+                status=400,
+                mimetype='text/plain'
+            )
+
+        # Here the computation
+        characterize(my_request)
+
+        return app.response_class(
+            response=my_request.model_dump_json(),
+            status=200,
+            mimetype='application/json',
+        )
+
+
+@api.route('/api/kernel')
+class Kernel(Resource):
+
+    @api.response(200, 'Success')
+    def post(self):
+        parsed_request = validate_and_parse_nexsim_response(request.json)
+
+        if type(parsed_request) != NeXSimResponse:
+            return parsed_request
+
+        my_request: NeXSimResponse = parsed_request
+
+        if not check_summary(my_request):
+            return app.response_class(
+                response=f"Unit has no summary. Cannot proceed to the characterization",
+                status=400,
+                mimetype='text/plain'
+            )
+
+        if not check_lca(my_request):
+            return app.response_class(
+                response=f"Unit has no lca. Cannot proceed to the kernel explanation",
+                status=400,
+                mimetype='text/plain'
+            )
+
+        kernel_explanation(my_request)
+
+        return app.response_class(
+            response=my_request.model_dump_json(),
+            status=200,
+            mimetype='application/json',
+        )
+
+
+@api.route('/api/oneshot')
+class OneshotComputation(Resource):
+    @api.response(200, 'Success')
+    def post(self):
+        upper: bool = os.environ.get('PREDICATES_UPPER') == 'True'
+        parsed_request = validate_and_parse_nexsim_response(request.json)
+
+        if type(parsed_request) != NeXSimResponse:
+            return parsed_request
+
+        my_request: NeXSimResponse = parsed_request
+
+        full_summary(my_request)
+        characterize(my_request)
+        lca(my_request, upper)
+        kernel_explanation(my_request)
+
+        return app.response_class(
+            response=my_request.model_dump_json(),
+            status=200,
+            mimetype='application/json'
+        )
+
+@api.route('/api/unit/report/<string:mode>')
+class Report(Resource):
+    @api.response(200, 'Success')
+    def post(self, mode):
+        if mode not in ['text', 'json']:
+            return {"error": f"{mode} is not a valid mode. Valid modes are 'text' and 'json'"}, 400
+        try:
+            _input = NeXSimResponse.model_validate(request.json)
+        except ValidationError as e:
+            return {"error": e.errors()}, 400
+        if mode == 'text':
+            raw_data = report_all(_input)
+            return app.response_class(
+                response=raw_data,
+                status=200,
+                mimetype='text/plain',
+                headers={'Content-Disposition': 'attachment; filename=report.txt'}
+            )
+        else:
+            _start = time.perf_counter()
+            _unit: NeXSimResponse = NeXSimResponse(unit=_input.unit)
+            full_summary(_unit)
+            characterize(_unit)
+            lca(_unit)
+            kernel_explanation(_unit)
+            if _unit.computation_times is None:
+                _unit.computation_times = {}
+
+            ct = _unit.computation_times
+
+            ct["total_clock_time"] = round(time.perf_counter() - _start, 5)
+            ct["total_core_time"] = round(ct["summary"]+ ct["characterization"], 5)
+            ct["total_ker_time"] = round(ct["summary"]+ ct["lca"]+ ct["ker"], 5)
+
+            return app.response_class(
+                response=_unit.model_dump_json(),
+                status=200,
+                mimetype='application/json',
+                headers={'Content-Disposition': 'attachment; filename=report.json'}
+            )
