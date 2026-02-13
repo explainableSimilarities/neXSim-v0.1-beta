@@ -56,7 +56,7 @@ Once the application is running, you can access the API endpoints via HTTP to re
 
 ### Api Endpoints
 
-- `GET /api/search/<string:lemma>/<int:page>`: Search for entities in the Knowledge Graph based on a query string (e.g., "apple", "dog", "New York").
+- `GET /api/search/<string:lemma>/<int:page>`: Search for entities in the Knowledge Graph based on a lemma (e.g., "apple", "dog", "New York").
 - `POST /api/entities/`
 - `GET /api/entities/<string:ids>`: Retrieve information about a list of entities based on their ids.
 - `POST /api/summary`: 
