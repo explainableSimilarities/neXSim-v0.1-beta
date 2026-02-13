@@ -57,15 +57,14 @@ Once the application is running, you can access the API endpoints via HTTP to re
 ### Api Endpoints
 
 - `GET /api/search/<string:lemma>/<int:page>`: Search for entities in the Knowledge Graph based on a lemma (e.g., "apple", "dog", "New York").
-- `POST /api/entities/`
+- `POST /api/entities/`: Retrieve information about a list of entities based on their ids.
 - `GET /api/entities/<string:ids>`: Retrieve information about a list of entities based on their ids.
-- `POST /api/summary`: 
-- `POST /api/lca`: 
-- `POST /api/characterize`: 
-- `POST /api/lca`: 
-- `POST /api/kernel`: 
-- `POST /api/oneshot`:
-- `/api/unit/report/<string:mode>`:
+- `POST /api/summary`: Given a set of entities in input, outputs the relevant properties of each entity.
+- `POST /api/characterize`: Given a set of entities in input and the corresponding summaries, it outputs the core characterization
+- `POST /api/lca`: The endpoint computes, for a set of entities, the least common neighbors over taxonomical relations
+- `POST /api/kernel`: Given a set of entities in input and the corresponding summaries and least common neighbors, it outputs the core characterization
+- `POST /api/oneshot`: It computer summary, characterize, lca, kernel having in input a list of entities
+- `/api/unit/report/<string:mode>`: Given a set of entities, it produces a text or json file reporting summaries, characterization, kernel, least common neighbors, plus some extra information
 
 ### Online Availability
 
